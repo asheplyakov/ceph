@@ -75,12 +75,15 @@ const void *config_option::conf_ptr(const md_config_t *conf) const
 }
 
 struct config_option config_optionsp[] = {
-#define OPTION(name, type, def_val) \
-       { STRINGIFY(name), type, offsetof(struct md_config_t, name) },
+#define OPTION4(name, type, def_val, safe) \
+       { STRINGIFY(name), type, offsetof(struct md_config_t, name), safe },
+#define OPTION(name, type, def_val) OPTION4(name, type, def_val, false)
+#define SAFE_OPTION(name, type, def_val) OPTION4(name, type, def_val, true)
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
 #include "common/config_opts.h"
 #undef OPTION
+#undef SAFE_OPTION
 #undef SUBSYS
 #undef DEFAULT_SUBSYS
 };
@@ -123,6 +126,7 @@ md_config_t::md_config_t()
 #define OPTION_OPT_U64(name, def_val) name(((uint64_t)1) * def_val),
 #define OPTION_OPT_UUID(name, def_val) name(def_val),
 #define OPTION(name, type, def_val) OPTION_##type(name, def_val)
+#define SAFE_OPTION(name, type, def_val) OPTION(name, type, def_val)
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
 #include "common/config_opts.h"
@@ -137,6 +141,7 @@ md_config_t::md_config_t()
 #undef OPTION_OPT_U64
 #undef OPTION_OPT_UUID
 #undef OPTION
+#undef SAFE_OPTION
 #undef SUBSYS
 #undef DEFAULT_SUBSYS
   lock("md_config_t", true, false)
@@ -151,8 +156,10 @@ void md_config_t::init_subsys()
 #define DEFAULT_SUBSYS(log, gather) \
   subsys.add(ceph_subsys_, "none", log, gather);
 #define OPTION(a, b, c)
+#define SAFE_OPTION(a, b, c)
 #include "common/config_opts.h"
 #undef OPTION
+#undef SAFE_OPTION
 #undef SUBSYS
 #undef DEFAULT_SUBSYS
 }
@@ -749,7 +756,7 @@ int md_config_t::set_val(const char *key, const char *val, bool meta, bool safe)
   for (int i = 0; i < NUM_CONFIG_OPTIONS; ++i) {
     config_option *opt = &config_optionsp[i];
     if (strcmp(opt->name, k.c_str()) == 0) {
-      if (safe && internal_safe_to_start_threads) {
+      if ((!opt->safe) && safe && internal_safe_to_start_threads) {
 	// If threads have been started...
 	if ((opt->type == OPT_STR) || (opt->type == OPT_ADDR) ||
 	    (opt->type == OPT_UUID)) {
@@ -776,7 +783,13 @@ int md_config_t::get_val(const char *key, char **buf, int len) const
   return _get_val(key, buf,len);
 }
 
-int md_config_t::_get_val(const char *key, char **buf, int len) const
+md_config_t::config_value_t md_config_t::get_val(const char *key) const
+{
+  Mutex::Locker l(lock);
+  return _get_val(key);
+}
+
+md_config_t::config_value_t md_config_t::_get_val(const char *key) const
 {
   assert(lock.is_locked());
 
@@ -790,41 +803,59 @@ int md_config_t::_get_val(const char *key, char **buf, int len) const
     const config_option *opt = &config_optionsp[i];
     if (strcmp(opt->name, k.c_str()))
       continue;
-
-    ostringstream oss;
+ 
     switch (opt->type) {
       case OPT_INT:
-        oss << *(int*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(int*)opt->conf_ptr(this)));
         break;
       case OPT_LONGLONG:
-        oss << *(long long*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(long long*)opt->conf_ptr(this)));
         break;
       case OPT_STR:
-	oss << *((std::string*)opt->conf_ptr(this));
+	return std::move(config_value_t(*((std::string*)opt->conf_ptr(this))));
 	break;
       case OPT_FLOAT:
-        oss << *(float*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(float*)opt->conf_ptr(this)));
         break;
       case OPT_DOUBLE:
-        oss << *(double*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(double*)opt->conf_ptr(this)));
         break;
-      case OPT_BOOL: {
-	  bool b = *(bool*)opt->conf_ptr(this);
-	  oss << (b ? "true" : "false");
-	}
+      case OPT_BOOL:
+        return std::move(config_value_t(*(bool*)opt->conf_ptr(this)));
         break;
       case OPT_U32:
-        oss << *(uint32_t*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(uint32_t*)opt->conf_ptr(this)));
         break;
       case OPT_U64:
-        oss << *(uint64_t*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(uint64_t*)opt->conf_ptr(this)));
         break;
       case OPT_ADDR:
-        oss << *(entity_addr_t*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(entity_addr_t*)opt->conf_ptr(this)));
         break;
       case OPT_UUID:
-	oss << *(uuid_d*)opt->conf_ptr(this);
+        return std::move(config_value_t(*(uuid_d*)opt->conf_ptr(this)));
         break;
+    }
+  }
+  return std::move(config_value_t(invalid_config_value_t()));
+}
+
+int md_config_t::_get_val(const char *key, char **buf, int len) const
+{
+  assert(lock.is_locked());
+
+  if (!key)
+    return -EINVAL;
+
+  string k(ConfFile::normalize_key_name(key));
+
+  config_value_t cval = _get_val(k.c_str());
+  if (!boost::get<invalid_config_value_t>(&cval)) {
+    ostringstream oss;
+    if (bool *flagp = boost::get<bool>(&cval)) {
+      oss << (*flagp ? "true" : "false");
+    } else {
+      oss << cval;
     }
     string str(oss.str());
     int l = strlen(str.c_str()) + 1;

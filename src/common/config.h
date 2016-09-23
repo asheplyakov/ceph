@@ -19,6 +19,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <boost/variant.hpp>
 
 #include "common/ConfUtils.h"
 #include "common/entity_name.h"
@@ -81,6 +82,19 @@ public:
    * apply_changes */
   typedef std::set < std::string > changed_set_t;
 
+  struct invalid_config_value_t { };
+  typedef boost::variant<invalid_config_value_t,
+                         int,
+                         long long,
+                         std::string,
+                         double,
+                         float,
+                         bool,
+                         entity_addr_t,
+                         uint32_t,
+                         uint64_t,
+                         uuid_d> config_value_t;
+
   // Create a new md_config_t structure.
   md_config_t();
   ~md_config_t();
@@ -136,6 +150,8 @@ public:
   // No metavariables will be returned (they will have already been expanded)
   int get_val(const char *key, char **buf, int len) const;
   int _get_val(const char *key, char **buf, int len) const;
+  config_value_t get_val(const char *key) const;
+  config_value_t _get_val(const char *key) const;
 
   void get_all_keys(std::vector<std::string> *keys) const;
 
@@ -229,6 +245,7 @@ public:
 #define OPTION_OPT_U64(name) const uint64_t name;
 #define OPTION_OPT_UUID(name) const uuid_d name;
 #define OPTION(name, ty, init) OPTION_##ty(name)
+#define SAFE_OPTION(name, ty, init) OPTION(name, ty, init)
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
 #include "common/config_opts.h"
@@ -243,6 +260,7 @@ public:
 #undef OPTION_OPT_U64
 #undef OPTION_OPT_UUID
 #undef OPTION
+#undef SAFE_OPTION
 #undef SUBSYS
 #undef DEFAULT_SUBSYS
 
@@ -261,6 +279,10 @@ public:
   friend class test_md_config_t;
 };
 
+inline std::ostream& operator<<(std::ostream& o, const md_config_t::invalid_config_value_t& ) {
+      return o << "INVALID_CONFIG_VALUE";
+}
+
 typedef enum {
 	OPT_INT, OPT_LONGLONG, OPT_STR, OPT_DOUBLE, OPT_FLOAT, OPT_BOOL,
 	OPT_ADDR, OPT_U32, OPT_U64, OPT_UUID
@@ -273,6 +295,7 @@ struct config_option {
   const char *name;
   opt_type_t type;
   size_t md_conf_off;
+  bool safe; // promise to access it only via md_config_t::get_val
 
   // Given a configuration, return a pointer to this option inside
   // that configuration.
@@ -284,12 +307,14 @@ struct config_option {
 enum config_subsys_id {
   ceph_subsys_,   // default
 #define OPTION(a,b,c)
+#define SAFE_OPTION(a,b,c)
 #define SUBSYS(name, log, gather) \
   ceph_subsys_##name,
 #define DEFAULT_SUBSYS(log, gather)
 #include "common/config_opts.h"
 #undef SUBSYS
 #undef OPTION
+#undef SAFE_OPTION
 #undef DEFAULT_SUBSYS
   ceph_subsys_max
 };

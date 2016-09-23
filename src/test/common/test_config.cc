@@ -27,12 +27,17 @@
 #define STRINGIFY(x) _STR(x)
 
 static struct config_option config_optionsp[] = {
-#define OPTION(name, type, def_val) \
-       { STRINGIFY(name), type, offsetof(struct md_config_t, name) },
+#define OPTION4(name, type, def_val, safe) \
+       { STRINGIFY(name), type, offsetof(struct md_config_t, name), safe },
+#define OPTION(name, type, def_val) OPTION4(name, type, def_val, false)
+#define SAFE_OPTION(name, type, def_val) OPTION4(name, type, def_val, true)
 #define SUBSYS(name, log, gather)
+
 #define DEFAULT_SUBSYS(log, gather)
 #include "common/config_opts.h"
 #undef OPTION
+#undef SAFE_OPTION
+#undef OPTION4
 #undef SUBSYS
 #undef DEFAULT_SUBSYS
 };
